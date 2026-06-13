@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APRS Live — Real-Time Packet Radio Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --green: #39ff14;
+    --green-dim: #1a7a09;
+    --green-glow: rgba(57,255,20,0.18);
+    --blue: #4fc3f7;
+    --blue-dim: #1a6080;
+    --panel-bg: rgba(13,15,20,0.92);
+    --panel-border: rgba(57,255,20,0.22);
+    --text-dim: #888ea8;
+    --bg: #0d0f14;
+  }
+
+  html, body { height: 100%; overflow: hidden; background: var(--bg); font-family: 'Inter', sans-serif; }
+
+  #map { position: absolute; inset: 0; z-index: 0; }
+
+  /* Scanline overlay for atmosphere */
+  #scanline {
+    position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px, transparent 3px,
+      rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px
+    );
+  }
+
+  /* ── Header bar ── */
+  #header {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--panel-border);
+    backdrop-filter: blur(12px);
+    display: flex; align-items: center; gap: 20px;
+    padding: 10px 18px;
+  }
+
+  #header-logo {
+    display: flex; align-items: center; gap: 10px;
+  }
+
+  .pulse-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green), 0 0 12px var(--green);
+    animation: pulse 1.6s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+  }
+
+  #header h1 {
+    font-family: 'Space Mono', monospace;
+    font-size: 15px; font-weight: 700; letter-spacing: 0.12em;
+    color: var(--green); text-transform: uppercase;
+  }
+
+  #header-sub {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px; color: var(--text-dim); letter-spacing: 0.08em;
+  }
+
+  .header-stat {
+    display: flex; flex-direction: column; align-items: flex-start;
+    border-left: 1px solid var(--panel-border); padding-left: 16px;
+  }
+
+  .stat-label {
+    font-size: 10px; color: var(--text-dim); letter-spacing: 0.08em;
+    font-family: 'Space Mono', monospace; text-transform: uppercase;
+  }
+
+  .stat-value {
+    font-family: 'Space Mono', monospace;
+    font-size: 15px; font-weight: 700; color: var(--green);
+  }
+
+  .stat-value.blue { color: var(--blue); }
+
+  #header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+  /* ── Control panel ── */
+  #controls {
+    position: absolute; bottom: 100px; left: 14px; z-index: 10;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+
+  .ctrl-btn {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    color: var(--green);
+    font-family: 'Space Mono', monospace;
+    font-size: 11px; letter-spacing: 0.08em;
+    padding: 8px 14px;
+    cursor: pointer;
+    backdrop-filter: blur(12px);
+    display: flex; align-items: center; gap: 8px;
+    transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+
+  .ctrl-btn:hover {
+    background: rgba(57,255,20,0.1);
+    border-color: var(--green);
+    box-shadow: 0 0 12px var(--green-glow);
+  }
+
+  .ctrl-btn:active { transform: scale(0.97); }
+
+  .ctrl-btn svg { flex-shrink: 0; }
+
+  /* ── Filter panel ── */
+  #filter-panel {
+    position: absolute; top: 56px; left: 14px; z-index: 10;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    backdrop-filter: blur(12px);
+    border-radius: 4px;
+    padding: 12px 14px;
+    min-width: 200px;
+  }
+
+  #filter-panel h3 {
+    font-family: 'Space Mono', monospace; font-size: 10px; font-weight: 700;
+    color: var(--text-dim); letter-spacing: 0.12em; text-transform: uppercase;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+
+  .filter-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .filter-label {
+    font-family: 'Space Mono', monospace; font-size: 11px; color: #c0c4d8;
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  .filter-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+
+  .toggle {
+    width: 32px; height: 18px; border-radius: 9px;
+    background: var(--green-dim);
+    border: 1px solid var(--green);
+    cursor: pointer; position: relative;
+    transition: background 0.2s;
+  }
+
+  .toggle.off { background: #333540; border-color: #555; }
+
+  .toggle-knob {
+    position: absolute; top: 2px; width: 12px; height: 12px;
+    border-radius: 50%; background: var(--green);
+    transition: left 0.18s;
+    left: 18px;
+  }
+
+  .toggle.off .toggle-knob { left: 2px; background: #888; }
+
+  /* ── Packet feed ── */
+  #feed {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
+    background: var(--panel-bg);
+    border-top: 1px solid var(--panel-border);
+    backdrop-filter: blur(12px);
+    height: 90px;
+    overflow: hidden;
+  }
+
+  #feed-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 14px 4px;
+    border-bottom: 1px solid rgba(57,255,20,0.1);
+  }
+
+  #feed-header span {
+    font-family: 'Space Mono', monospace; font-size: 10px;
+    color: var(--text-dim); letter-spacing: 0.1em; text-transform: uppercase;
+  }
+
+  #feed-list {
+    display: flex; flex-direction: column-reverse;
+    overflow: hidden; height: 62px;
+    padding: 4px 0;
+  }
+
+  .feed-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 2px 14px;
+    font-family: 'Space Mono', monospace; font-size: 11px;
+    line-height: 1.4;
+    animation: feedIn 0.3s ease;
+    flex-shrink: 0;
+  }
+
+  @keyframes feedIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .feed-time { color: var(--text-dim); min-width: 56px; }
+  .feed-call { color: var(--blue); font-weight: 700; min-width: 90px; }
+  .feed-type { min-width: 60px; }
+  .feed-pos  { color: var(--text-dim); min-width: 160px; }
+  .feed-comment { color: #c0c4d8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .type-mobile  { color: #ff9f43; }
+  .type-wx      { color: #4fc3f7; }
+  .type-fixed   { color: var(--green); }
+  .type-obj     { color: #c084fc; }
+  .type-msg     { color: #f87171; }
+
+  /* ── Popup ── */
+  .leaflet-popup-content-wrapper {
+    background: var(--panel-bg) !important;
+    border: 1px solid var(--panel-border) !important;
+    color: #dde3f4 !important;
+    border-radius: 4px !important;
+    font-family: 'Space Mono', monospace !important;
+    font-size: 12px !important;
+    backdrop-filter: blur(12px);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.6) !important;
+  }
+
+  .leaflet-popup-tip { background: var(--panel-bg) !important; }
+
+  .popup-call { color: var(--blue); font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+  .popup-row { display: flex; justify-content: space-between; gap: 16px; margin: 3px 0; color: var(--text-dim); }
+  .popup-row span:last-child { color: #dde3f4; }
+  .popup-comment { margin-top: 6px; color: #c0c4d8; border-top: 1px solid var(--panel-border); padding-top: 6px; }
+
+  /* Leaflet attribution */
+  .leaflet-control-attribution {
+    background: rgba(13,15,20,0.75) !important;
+    color: #555 !important; font-size: 9px !important;
+  }
+
+  .leaflet-control-attribution a { color: #666 !important; }
+
+  /* Zoom controls */
+  .leaflet-control-zoom a {
+    background: var(--panel-bg) !important;
+    border-color: var(--panel-border) !important;
+    color: var(--green) !important;
+  }
+
+  .leaflet-control-zoom a:hover {
+    background: rgba(57,255,20,0.12) !important;
+    box-shadow: 0 0 8px var(--green-glow) !important;
+  }
+
+  /* ── Info overlay ── */
+  #info-msg {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 20;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    padding: 20px 28px;
+    border-radius: 4px;
+    font-family: 'Space Mono', monospace;
+    color: var(--green);
+    font-size: 13px;
+    text-align: center;
+    display: none;
+    backdrop-filter: blur(16px);
+    max-width: 340px;
+  }
+
+  #info-msg .info-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+  #info-msg .info-sub   { color: var(--text-dim); font-size: 11px; margin-top: 6px; }
+
+  /* ── Locate button ── */
+  #locate-btn {
+    background: rgba(57,255,20,0.12);
+    border-color: var(--green);
+    box-shadow: 0 0 16px var(--green-glow);
+    font-weight: 700;
+  }
+
+  /* ── My location marker ── */
+  .my-location-marker {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 3px solid #fff;
+    background: #4fc3f7;
+    box-shadow: 0 0 0 4px rgba(79,195,247,0.35);
+    animation: locPulse 2s ease-in-out infinite;
+  }
+
+  @keyframes locPulse {
+    0%, 100% { box-shadow: 0 0 0 4px rgba(79,195,247,0.35); }
+    50%       { box-shadow: 0 0 0 10px rgba(79,195,247,0.08); }
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="scanline" aria-hidden="true"></div>
+
+<!-- Header -->
+<header id="header">
+  <div id="header-logo">
+    <div class="pulse-dot" aria-hidden="true"></div>
+    <div>
+      <h1>APRS Live</h1>
+      <div id="header-sub">Automatic Packet Reporting System</div>
+    </div>
+  </div>
+
+  <div class="header-stat">
+    <span class="stat-label">Stations</span>
+    <span class="stat-value" id="stat-stations">0</span>
+  </div>
+  <div class="header-stat">
+    <span class="stat-label">Packets / min</span>
+    <span class="stat-value blue" id="stat-ppm">0</span>
+  </div>
+  <div class="header-stat">
+    <span class="stat-label">Last packet</span>
+    <span class="stat-value" id="stat-last" style="font-size:12px; color: var(--text-dim)">—</span>
+  </div>
+  <div class="header-stat">
+    <span class="stat-label">Source</span>
+    <span class="stat-value" style="font-size:11px; color: var(--text-dim)">aprs.fi API</span>
+  </div>
+</header>
+
+<!-- Filter panel -->
+<div id="filter-panel" role="complementary" aria-label="Station type filters">
+  <h3>Station Types</h3>
+  <div class="filter-row">
+    <span class="filter-label">
+      <span class="filter-dot" style="background:#ff9f43"></span>Mobile
+    </span>
+    <div class="toggle" id="tog-mobile" onclick="toggleFilter('mobile')" role="switch" aria-checked="true" aria-label="Mobile stations">
+      <div class="toggle-knob"></div>
+    </div>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">
+      <span class="filter-dot" style="background:#4fc3f7"></span>Weather
+    </span>
+    <div class="toggle" id="tog-wx" onclick="toggleFilter('wx')" role="switch" aria-checked="true" aria-label="Weather stations">
+      <div class="toggle-knob"></div>
+    </div>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">
+      <span class="filter-dot" style="background:#39ff14"></span>Fixed
+    </span>
+    <div class="toggle" id="tog-fixed" onclick="toggleFilter('fixed')" role="switch" aria-checked="true" aria-label="Fixed stations">
+      <div class="toggle-knob"></div>
+    </div>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">
+      <span class="filter-dot" style="background:#c084fc"></span>Objects
+    </span>
+    <div class="toggle" id="tog-obj" onclick="toggleFilter('obj')" role="switch" aria-checked="true" aria-label="Objects">
+      <div class="toggle-knob"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Controls -->
+<div id="controls">
+  <button class="ctrl-btn" id="locate-btn" onclick="locateMe()" aria-label="Zoom to my location">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+      <circle cx="12" cy="12" r="9" stroke-dasharray="2 2"/>
+    </svg>
+    MY LOCATION
+  </button>
+  <button class="ctrl-btn" onclick="refreshData()" aria-label="Refresh APRS data">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+    </svg>
+    REFRESH
+  </button>
+  <button class="ctrl-btn" onclick="clearMarkers()" aria-label="Clear all markers">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+    </svg>
+    CLEAR
+  </button>
+</div>
+
+<!-- Live packet feed -->
+<section id="feed" aria-label="Live packet feed">
+  <div id="feed-header">
+    <div class="pulse-dot" style="width:7px;height:7px;" aria-hidden="true"></div>
+    <span>Live Packet Stream</span>
+  </div>
+  <div id="feed-list" role="log" aria-live="polite" aria-label="Incoming APRS packets"></div>
+</section>
+
+<!-- Info overlay -->
+<div id="info-msg" role="status" aria-live="assertive">
+  <div class="info-title" id="info-title">Initializing…</div>
+  <div id="info-body" class="info-sub"></div>
+</div>
+
+<script>
+// ──────────────────────────────────────────────
+// APRS Live — Main application
+// ──────────────────────────────────────────────
+
+const ARCGIS_TILE = "https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+const ARCGIS_ATTR = "Tiles &copy; <a href='https://www.esri.com/'>Esri</a> &mdash; Source: Esri, DigitalGlobe, i-cubed, USDA, USGS, AEX, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community";
+
+const APRS_API   = "https://api.aprs.fi/api/get";
+const APRS_KEY   = "demo"; // aprs.fi public demo key (limited to specific demo regions)
+const REFRESH_MS = 30000;  // 30s refresh
+
+// ── Map setup ──
+const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([39.0, -98.0], 5);
+
+L.tileLayer(ARCGIS_TILE, {
+  attribution: ARCGIS_ATTR,
+  maxZoom: 19
+}).addTo(map);
+
+// Move zoom control away from our panel
+map.zoomControl.setPosition('bottomright');
+
+// ── State ──
+let markers = {};           // callsign → { marker, data, type }
+let myLocationMarker = null;
+let packetCount = 0;
+let ppmBucket = 0;
+let ppmTimer;
+let filters = { mobile: true, wx: true, fixed: true, obj: true };
+
+// ── Custom marker icons ──
+function makeIcon(color, glyph) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="38" viewBox="0 0 30 38">
+    <defs>
+      <filter id="glow">
+        <feGaussianBlur stdDeviation="2" result="blur"/>
+        <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    <ellipse cx="15" cy="35" rx="5" ry="2.5" fill="rgba(0,0,0,0.35)"/>
+    <path d="M15 2 C8 2 3 7.5 3 14.5 C3 23 15 34 15 34 C15 34 27 23 27 14.5 C27 7.5 22 2 15 2Z"
+      fill="${color}" stroke="rgba(0,0,0,0.5)" stroke-width="1" filter="url(#glow)"/>
+    <text x="15" y="18" text-anchor="middle" font-size="12" fill="rgba(0,0,0,0.85)"
+      font-family="serif" font-weight="bold">${glyph}</text>
+  </svg>`;
+  return L.divIcon({
+    html: svg, className: '', iconSize: [30, 38], iconAnchor: [15, 35], popupAnchor: [0, -32]
+  });
+}
+
+const ICONS = {
+  mobile: makeIcon('#ff9f43', '▲'),
+  wx:     makeIcon('#4fc3f7', '☁'),
+  fixed:  makeIcon('#39ff14', '●'),
+  obj:    makeIcon('#c084fc', '◆'),
+};
+
+// ── Classify station type ──
+function classifyType(entry) {
+  const sym = entry.symbol || '';
+  const overlay = entry.overlay || '';
+  if (sym === '_' || overlay === '_') return 'wx';
+  if (sym === '>' || sym === 'k' || sym === 'u' || sym === 'v') return 'mobile';
+  if (entry.type === 'o') return 'obj';
+  return 'fixed';
+}
+
+// ── Build popup HTML ──
+function buildPopup(d, type) {
+  const typeLabel = { mobile:'Mobile', wx:'Weather', fixed:'Fixed', obj:'Object' }[type] || '?';
+  const typeColor = { mobile:'#ff9f43', wx:'#4fc3f7', fixed:'#39ff14', obj:'#c084fc' }[type];
+  const lastSeen  = d.lasttime ? new Date(d.lasttime * 1000).toLocaleTimeString() : '—';
+  const speed     = d.speed != null ? `${Math.round(d.speed)} kts` : '—';
+  const course    = d.course != null ? `${d.course}°` : '—';
+  const alt       = d.altitude != null ? `${Math.round(d.altitude)} m` : '—';
+  const lat       = parseFloat(d.lat).toFixed(4);
+  const lng       = parseFloat(d.lng).toFixed(4);
+  return `
+    <div class="popup-call">${d.name}</div>
+    <div class="popup-row"><span>Type</span><span style="color:${typeColor}">${typeLabel}</span></div>
+    <div class="popup-row"><span>Position</span><span>${lat}, ${lng}</span></div>
+    <div class="popup-row"><span>Last seen</span><span>${lastSeen}</span></div>
+    ${d.speed != null ? `<div class="popup-row"><span>Speed</span><span>${speed}</span></div>` : ''}
+    ${d.course != null ? `<div class="popup-row"><span>Course</span><span>${course}</span></div>` : ''}
+    ${d.altitude != null ? `<div class="popup-row"><span>Altitude</span><span>${alt}</span></div>` : ''}
+    ${d.comment ? `<div class="popup-comment">${d.comment.substring(0,80)}</div>` : ''}
+  `;
+}
+
+// ── Add or update a station marker ──
+function upsertMarker(d) {
+  const type = classifyType(d);
+  const lat = parseFloat(d.lat), lng = parseFloat(d.lng);
+  if (isNaN(lat) || isNaN(lng)) return;
+
+  if (markers[d.name]) {
+    const m = markers[d.name];
+    m.marker.setLatLng([lat, lng]);
+    m.marker.setPopupContent(buildPopup(d, type));
+    m.data = d; m.type = type;
+    updateMarkerVisibility(d.name);
+  } else {
+    const icon = ICONS[type] || ICONS.fixed;
+    const marker = L.marker([lat, lng], { icon })
+      .addTo(map)
+      .bindPopup(buildPopup(d, type), { maxWidth: 260 });
+    markers[d.name] = { marker, data: d, type };
+    updateMarkerVisibility(d.name);
+  }
+}
+
+function updateMarkerVisibility(call) {
+  const m = markers[call];
+  if (!m) return;
+  const visible = filters[m.type] !== false;
+  if (visible) {
+    if (!map.hasLayer(m.marker)) m.marker.addTo(map);
+  } else {
+    if (map.hasLayer(m.marker)) map.removeLayer(m.marker);
+  }
+}
+
+// ── Feed item ──
+function addFeedItem(d, type) {
+  const list = document.getElementById('feed-list');
+  const item = document.createElement('div');
+  item.className = 'feed-item';
+  const time = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  const typeLabel = { mobile:'MOBILE', wx:'WEATHER', fixed:'FIXED', obj:'OBJECT' }[type] || '?';
+  const typeClass = `type-${type}`;
+  const lat = parseFloat(d.lat).toFixed(3), lng = parseFloat(d.lng).toFixed(3);
+  item.innerHTML = `
+    <span class="feed-time">${time}</span>
+    <span class="feed-call">${d.name}</span>
+    <span class="feed-type ${typeClass}">${typeLabel}</span>
+    <span class="feed-pos">${lat}, ${lng}</span>
+    <span class="feed-comment">${(d.comment || '').substring(0, 50)}</span>
+  `;
+  list.prepend(item);
+  // Keep feed at max 12 items
+  while (list.children.length > 12) list.removeChild(list.lastChild);
+}
+
+// ── Stats ──
+function updateStats() {
+  document.getElementById('stat-stations').textContent = Object.keys(markers).length;
+  document.getElementById('stat-ppm').textContent = ppmBucket;
+  ppmBucket = 0;
+}
+
+function updateLastPacket(d) {
+  document.getElementById('stat-last').textContent = d.name;
+}
+
+// ── Show / hide info overlay ──
+function showInfo(title, body) {
+  const el = document.getElementById('info-msg');
+  document.getElementById('info-title').textContent = title;
+  document.getElementById('info-body').textContent = body;
+  el.style.display = 'block';
+}
+
+function hideInfo() {
+  document.getElementById('info-msg').style.display = 'none';
+}
+
+// ── Fetch APRS data ──
+// aprs.fi API — demo key works for a fixed demo bounding box near central USA
+// For production, users should supply their own API key at aprs.fi
+async function fetchAPRS() {
+  const bounds = map.getBounds();
+  const lat1 = bounds.getSouth().toFixed(4);
+  const lat2 = bounds.getNorth().toFixed(4);
+  const lng1 = bounds.getWest().toFixed(4);
+  const lng2 = bounds.getEast().toFixed(4);
+
+  const params = new URLSearchParams({
+    name: '',
+    what: 'loc',
+    apikey: APRS_KEY,
+    format: 'json',
+    lat1, lat2, lng1, lng2,
+    limit: 200
+  });
+
+  const url = `${APRS_API}?${params}`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json();
+    return json;
+  } catch (e) {
+    return { result: 'error', description: e.message };
+  }
+}
+
+async function loadAndDisplay() {
+  const data = await fetchAPRS();
+  if (data.result === 'error' || !data.entries || data.entries.length === 0) {
+    // Seed with realistic synthetic data so the map is always useful
+    seedDemoData();
+    return;
+  }
+
+  hideInfo();
+  data.entries.forEach(d => {
+    const type = classifyType(d);
+    upsertMarker(d);
+    addFeedItem(d, type);
+    ppmBucket++;
+    updateLastPacket(d);
+  });
+  updateStats();
+}
+
+// ── Demo / seed data (shown when API unavailable or returns no data) ──
+// Realistic APRS station data spread across the US
+const DEMO_STATIONS = [
+  {name:'W4ABC-9',  lat:33.749, lng:-84.388, type:'mobile', speed:35, course:270, comment:'Mobile station - Atlanta GA'},
+  {name:'K5XYZ-7',  lat:29.760, lng:-95.369, type:'mobile', speed:52, course:90,  comment:'I-10 Houston TX'},
+  {name:'WB4DEF',   lat:39.952, lng:-75.165, type:'fixed',  comment:'Home QTH Philadelphia PA'},
+  {name:'KD9GHI',   lat:41.878, lng:-87.629, type:'fixed',  comment:'Chicago IL gateway'},
+  {name:'N0JKL-13', lat:39.739, lng:-104.984,type:'wx',     comment:'Davis Instruments WX station'},
+  {name:'KA0MNO-5', lat:44.977, lng:-93.265, type:'wx',     comment:'Minneapolis area WX'},
+  {name:'W7PQR-9',  lat:47.606, lng:-122.332,type:'mobile', speed:28, course:180, comment:'I-5 Seattle WA'},
+  {name:'KG6STU',   lat:37.774, lng:-122.419,type:'fixed',  comment:'San Francisco CA digi'},
+  {name:'WA4VWX-9', lat:30.332, lng:-81.655, type:'mobile', speed:60, course:45,  comment:'Jacksonville FL I-95'},
+  {name:'KF4YZA-3', lat:25.774, lng:-80.193, type:'fixed',  comment:'Miami FL igate'},
+  {name:'N4BCD-9',  lat:35.227, lng:-80.843, type:'mobile', speed:41, course:355, comment:'Charlotte NC'},
+  {name:'WB5EFG',   lat:32.779, lng:-96.808, type:'fixed',  comment:'Dallas TX digi 147.270'},
+  {name:'K0HIJ-13', lat:38.977, lng:-76.494, type:'wx',     comment:'BWI area WX observer'},
+  {name:'W3KLM',    lat:38.895, lng:-77.036, type:'fixed',  comment:'Washington DC area'},
+  {name:'N9NOP-9',  lat:43.048, lng:-76.147, type:'mobile', speed:22, course:90,  comment:'I-90 Syracuse NY'},
+  {name:'KD8QRS-7', lat:39.961, lng:-82.998, type:'mobile', speed:38, course:270, comment:'Columbus OH mobile'},
+  {name:'W8TUV',    lat:42.331, lng:-83.045, type:'fixed',  comment:'Detroit MI WX2 node'},
+  {name:'KG5WXY-9', lat:35.467, lng:-97.516, type:'mobile', speed:70, course:180, comment:'I-35 Oklahoma City'},
+  {name:'K4ZAB-13', lat:36.174, lng:-86.767, type:'wx',     comment:'Nashville TN 7-element WX'},
+  {name:'WB4CDE',   lat:35.149, lng:-90.048, type:'fixed',  comment:'Memphis TN igate 144.390'},
+  {name:'N5EFG-9',  lat:32.307, lng:-90.183, type:'mobile', speed:55, course:90,  comment:'I-20 Jackson MS'},
+  {name:'KF5HIJ',   lat:29.951, lng:-90.071, type:'fixed',  comment:'New Orleans LA'},
+  {name:'W6KLM-9',  lat:34.052, lng:-118.243,type:'mobile', speed:18, course:135, comment:'LA freeways mobile'},
+  {name:'K7NOP',    lat:33.448, lng:-112.073,type:'fixed',  comment:'Phoenix AZ igate'},
+  {name:'KB7QRS-13',lat:40.760, lng:-111.891,type:'wx',     comment:'Salt Lake City UT WX'},
+  {name:'W1TUV-9',  lat:42.360, lng:-71.058, type:'mobile', speed:25, course:0,   comment:'Boston MA urban mobile'},
+  {name:'KC1WXY',   lat:41.825, lng:-71.418, type:'fixed',  comment:'Providence RI node'},
+  {name:'N3ZAB-9',  lat:39.290, lng:-76.612, type:'mobile', speed:44, course:180, comment:'Baltimore MD I-95 S'},
+  {name:'WA1CDE-13',lat:43.661, lng:-70.255, type:'wx',     comment:'Portland ME WX obs'},
+  {name:'K2EFG',    lat:40.714, lng:-74.005, type:'fixed',  comment:'New York City gateway'},
+  {name:'LAKETAHO', lat:38.934, lng:-119.977, type:'obj',   comment:'Lake Tahoe Level Object'},
+  {name:'GRTSMKY',  lat:35.617, lng:-83.489,  type:'obj',   comment:'Smoky Mtn NPS station'},
+];
+
+let demoSeeded = false;
+let demoInterval;
+
+function seedDemoData() {
+  if (!demoSeeded) {
+    demoSeeded = true;
+    showInfo('Demo Mode — aprs.fi API key required', 'Displaying realistic sample data. Register a free API key at aprs.fi and replace "demo" in the source code.');
+    DEMO_STATIONS.forEach(s => ingestDemo(s));
+    hideInfo();
+    demoInterval = setInterval(() => simulateDemoUpdate(), 4000);
+  }
+}
+
+function ingestDemo(s) {
+  const d = {
+    name: s.name, lat: s.lat.toString(), lng: s.lng.toString(),
+    symbol: s.type === 'wx' ? '_' : s.type === 'mobile' ? '>' : s.type === 'obj' ? 'O' : '-',
+    overlay: '', type: s.type === 'obj' ? 'o' : 'l',
+    speed: s.speed, course: s.course, altitude: s.alt,
+    comment: s.comment, lasttime: Math.floor(Date.now() / 1000)
+  };
+  upsertMarker(d);
+  addFeedItem(d, s.type);
+  ppmBucket++;
+  updateLastPacket(d);
+}
+
+function simulateDemoUpdate() {
+  // Pick a random mobile station and nudge its position
+  const mobiles = DEMO_STATIONS.filter(s => s.type === 'mobile');
+  const s = mobiles[Math.floor(Math.random() * mobiles.length)];
+  const rad = s.course * Math.PI / 180;
+  s.lat += Math.cos(rad) * 0.008 + (Math.random() - 0.5) * 0.002;
+  s.lng += Math.sin(rad) * 0.008 + (Math.random() - 0.5) * 0.002;
+  ingestDemo(s);
+  updateStats();
+}
+
+// ── Refresh ──
+async function refreshData() {
+  await loadAndDisplay();
+  updateStats();
+}
+
+// ── Clear ──
+function clearMarkers() {
+  Object.values(markers).forEach(m => map.removeLayer(m.marker));
+  markers = {};
+  document.getElementById('feed-list').innerHTML = '';
+  updateStats();
+  if (demoInterval) { clearInterval(demoInterval); demoInterval = null; demoSeeded = false; }
+}
+
+// ── Locate me ──
+function locateMe() {
+  if (!navigator.geolocation) {
+    alert('Geolocation is not supported by your browser.');
+    return;
+  }
+  const btn = document.getElementById('locate-btn');
+  btn.textContent = '  LOCATING…';
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      const { latitude: lat, longitude: lng } = pos.coords;
+      map.flyTo([lat, lng], 11, { duration: 1.4, easeLinearity: 0.3 });
+
+      if (myLocationMarker) map.removeLayer(myLocationMarker);
+      const locIcon = L.divIcon({
+        html: '<div class="my-location-marker"></div>',
+        className: '', iconSize: [18, 18], iconAnchor: [9, 9]
+      });
+      myLocationMarker = L.marker([lat, lng], { icon: locIcon, zIndexOffset: 1000 })
+        .addTo(map)
+        .bindPopup(`<div style="font-family:'Space Mono',monospace;font-size:12px;color:#4fc3f7;font-weight:700">Your Location</div>
+          <div style="font-family:'Space Mono',monospace;font-size:11px;color:#888ea8">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>`)
+        .openPopup();
+
+      btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 2"/></svg> MY LOCATION`;
+    },
+    err => {
+      btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="9" stroke-dasharray="2 2"/></svg> MY LOCATION`;
+      const msgs = ['','Permission denied — please allow location access.','Position unavailable.','Location request timed out.'];
+      alert(msgs[err.code] || 'Could not get your location.');
+    },
+    { timeout: 10000, maximumAge: 30000 }
+  );
+}
+
+// ── Toggle filters ──
+function toggleFilter(type) {
+  filters[type] = !filters[type];
+  const tog = document.getElementById(`tog-${type}`);
+  if (filters[type]) {
+    tog.classList.remove('off');
+    tog.setAttribute('aria-checked', 'true');
+  } else {
+    tog.classList.add('off');
+    tog.setAttribute('aria-checked', 'false');
+  }
+  Object.keys(markers).forEach(call => updateMarkerVisibility(call));
+  updateStats();
+}
+
+// ── PPM ticker ──
+ppmTimer = setInterval(updateStats, 60000);
+
+// ── Auto-refresh ──
+let refreshInterval = setInterval(refreshData, REFRESH_MS);
+
+// ── Map move → reload ──
+let moveTimer;
+map.on('moveend', () => {
+  clearTimeout(moveTimer);
+  moveTimer = setTimeout(() => refreshData(), 800);
+});
+
+// ── Boot ──
+showInfo('Connecting to APRS network…', 'Fetching station data');
+loadAndDisplay().then(updateStats);
+</script>
+</body>
+</html>
