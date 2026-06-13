@@ -30,5 +30,5 @@ Since the aprs.fi API requires a free registered key for real requests, the app 
 <br><br>
 
 
-<b>To connect to real APRS data: Register a free API key at aprs.fi and replace the "demo" string in the source with your key — that's the only change needed.</b>
-
+<b>To connect to real APRS data: Register a free API key at aprs.fi and replace the "demo" string in the source with your key — that's the 
+only changeneeded.</b>
